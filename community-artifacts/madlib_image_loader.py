@@ -48,9 +48,6 @@
 #               from disk.
 
 import numpy as np
-from keras.preprocessing import image
-from keras.datasets import cifar10
-import keras
 import sys
 import os
 import re
@@ -65,6 +62,8 @@ import signal
 import traceback
 import exceptions
 from cStringIO import StringIO
+import argparse
+from PIL import Image
 
 class SignalException (Exception):
     pass
@@ -83,7 +82,14 @@ def _worker_sig_handler(signum, frame):
 
     raise SignalException(msg)
 
-def _call_worker(data):
+def _call_disk_worker(label):
+    # TODO: -  call _load_from_disk()
+    #        - split data into blocks of NUM_ROWS_PER_FILE
+    #          rows each
+    #        - call _call_np_worker on each block
+    pass
+
+def _call_np_worker(data):
     try:
         if iloader.no_temp_files:
             iloader._just_load(data)
@@ -105,7 +111,8 @@ def _worker_cleanup(dummy):
     if iloader.tmp_dir:
         iloader.rm_temp_dir()
 
-def init_worker(mother_pid, table_name, append, no_temp_files, db_creds):
+def init_worker(mother_pid, table_name, append, no_temp_files,
+                db_creds, root_dir=None):
     pr = current_process()
     print("Initializing {0} [pid {1}]".format(pr.name, pr.pid))
 
@@ -114,6 +121,7 @@ def init_worker(mother_pid, table_name, append, no_temp_files, db_creds):
         iloader.mother_pid = mother_pid
         iloader.table_name = table_name
         iloader.no_temp_files = no_temp_files
+        iloader.root_dir = root_dir
         iloader.img_names = None
         signal.signal(signal.SIGINT, _worker_sig_handler)
         signal.signal(signal.SIGSEGV, _worker_sig_handler)
@@ -298,6 +306,7 @@ class ImageLoader:
         self.mother = True
         self.append = append
         self.table_name = table_name
+        self.root_dir = None
         self.db_connect()
 
         if self.append:
@@ -331,15 +340,14 @@ class ImageLoader:
 
         print("Spawning {0} workers...".format(self.num_workers))
 
-        p = Pool(processes=self.num_workers,
-                 initializer=init_worker,
-                 initargs=(current_process().pid,
-                           self.table_name,
-                           self.append,
-                           no_temp_files,
-                           self.db_creds))
-
-
+        if not self.pool:
+            self.pool = Pool(processes=self.num_workers,
+                             initializer=init_worker,
+                             initargs=(current_process().pid,
+                             self.table_name,
+                             self.append,
+                             no_temp_files,
+                             self.db_creds))
         datas = []
 
         for n in range(0, len(data), self.ROWS_PER_FILE):
@@ -353,21 +361,93 @@ class ImageLoader:
         #  ( inside x can also be a numpy tensor with several dimensions, but y
         #    should just be a single scalar )
         #
-        #  multiprocessing library will call _call_worker() in some worker for
+        #  multiprocessing library will call _call_np_worker() in some worker for
         #   each file, splitting the list of files up into roughly equal chunks
         #   for each worker to handle.  For example, if there are 500 files and
-        #   5 workers, each will handle about 100 files, and _call_worker() will
+        #   5 workers, each will handle about 100 files, and _call_np_worker() will
         #   be called 100 times, each time with a different file full of images.
         #
 
         try:
-            p.map(_call_worker, datas)
+            self.pool.map(_call_np_worker, datas)
         except(Exception) as e:
             raise e
 
-        p.map(_worker_cleanup, [0] * self.num_workers)
+        self.pool.map(_worker_cleanup, [0] * self.num_workers)
         end_time = time.time()
         print("Done!  Loaded {0} images in {1}s".format(len(data), end_time - start_time))
+    def load_dataset_from_disk(self, root_dir, num_labels, table_name):
+        print "Looking for {0} image labels in {1}".format(num_labels, root_dir)
+
+        self.root_dir = root_dir
+        labels = os.listdir(root_dir)
+        if num_labels is not 'all':
+            labels = labels[:num_labels]
+
+        if not self.pool:
+            self.pool = Pool(processes=self.num_workers,
+                             initializer=init_worker,
+                             initargs=(current_process().pid,
+                             self.table_name,
+                             self.append,
+                             no_temp_files,
+                             self.db_creds,
+                             root_dir))
+        try:
+            self.pool.map(_call_disk_worker, labels)
+        except(Exception) as e:
+            raise e
+
+        #for label in labels:
+        #    res = _load_label_from_disk(label)
+        #    if res is not None:
+        #        print(res.shape)
+
+    def _load_label_from_disk(self, label):
+        dir_name = os.path.join(self.root_dir, label)
+        print(dir_name)
+        if not os.path.isdir(dir_name):
+            return None
+
+        image_files = os.listdir(dir_name)
+        images = None
+        for image_name in image_files:
+            im = Image.open(os.path.join(dir_name, image_name))
+            a = np.asarray(im)
+            if images is None:
+                images = np.array([a])
+            else:
+                images = np.append(images, [a], axis=0)
+
+        return images
+
+def main():
+    parser = argparse.ArgumentParser(description='Madlib Image Loader',
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-r', '--root_dir', action='store',
+                        dest='root_dir', default='.',
+                        help='Root directory of image directories')
+
+    parser.add_argument('-n', '--num_labels', action='store',
+                        dest='num_labels', default='all',
+                        help='Number of image labels (categories) to load.')
+
+    parser.add_argument('-d', '--db_name', action='store',
+                        dest='db_name', default='madlib',
+                        help='Name of database where images should be loaded')
+
+    parser.add_argument('table_name',
+                        help='Name of table where images should be loaded')
+
+    args = parser.parse_args()
+
+    db_creds = DbCredentials()  #TODO: add params from args
+
+    global iloader
+    iloader = ImageLoader(num_workers=args.num_workers, db_creds)
+    iloader.load_dataset_from_disk(args.root_dir,
+                                   args.num_labels,
+                                   args.table_name)
 
 # Uncommenting the code below can be useful for testing, but will be removed
 #  once we add a main() function intended to be called by a user who wants to
@@ -379,6 +459,8 @@ class ImageLoader:
 #                           db_creds=db_creds)
 #     iloader.load_np_array_to_table(data_x, data_y, append=True)
 # 
-# if __name__ == '__main__':
+if __name__ == '__main__':
+    main()
 #     train_data, _ = cifar10.load_data()
 #     test_loading_nparray(*train_data)
+
