@@ -54,9 +54,6 @@
 #               support for loading images from disk.
 
 import numpy as np
-from keras.preprocessing import image
-from keras.datasets import cifar10
-import keras
 import sys
 import os
 import re
@@ -315,6 +312,12 @@ class ImageLoader:
         if not self.table_name:
             raise ValueError("Must specify table_name either in ImageLoader"
                 " constructor or in load_np_array_to_table params!")
+
+        if len(data_x) != len(data_y):
+            raise ValueError("Invalid dataset passed, number of labels in "
+                             "data_y ({0}) does not match number of images "
+                             "in data_x ({1})"\
+                .format(len(data_y), len(data_x)))
 
         self.db_connect()
 
