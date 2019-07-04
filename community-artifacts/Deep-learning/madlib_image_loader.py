@@ -291,6 +291,50 @@ class ImageLoader:
         with file(filename, 'r') as f:
             self._copy_into_db(f, data)
 
+    def _validate_input_and_create_table(self, data_x=[], data_y=[]):
+        if len(data_x) != len(data_y):
+            raise ValueError("Invalid dataset passed, number of labels in "
+                             "data_y ({0}) does not match number of images "
+                             "in data_x ({1})"\
+                .format(len(data_y), len(data_x)))
+
+        self.db_connect()
+
+        if self.append:
+            # Validate that table already exists
+            try:
+                self.db_exec("SELECT count(*) FROM {0}".format(self.table_name),
+                             echo=False)
+            except db.DatabaseError:
+                raise RuntimeError("append=True passed, but cannot append to "
+                                   "table {0} in db {1}.  Either make sure the "
+                                   "table exists and you have access to it, or "
+                                   "use append=False (default) to auto-create it"
+                                   "during loading."
+                    .format(self.table_name, self.db_creds.db_name))
+
+            print "Appending to table {0} in {1} db".format(self.table_name,
+                                                            self.db_creds.db_name)
+        else:
+            # Create new table
+            try:
+                if self.img_names:
+                    sql = "CREATE TABLE {0} (id SERIAL, x REAL[], y TEXT,\
+                        img_name TEXT)".format(self.table_name)
+                else:
+                    sql = "CREATE TABLE {0} (id SERIAL, x REAL[], y TEXT)"\
+                        .format( self.table_name)
+                self.db_exec(sql)
+            except db.DatabaseError as e:
+                raise RuntimeError("Table {0} already exists in {1} db.  Use "
+                                   "append=True to append more images to it."
+                    .format(self.table_name, self.db_creds.db_name))
+
+            print "Created table {0} in {1} db".format(self.table_name,
+                self.db_creds.db_name)
+
+        self.db_close()
+
     def load_np_array_to_table(self, data_x, data_y, table_name=None,
                                append=False, img_names=None,
                                no_temp_files=False):
@@ -324,52 +368,9 @@ class ImageLoader:
             raise ValueError("Must specify table_name either in ImageLoader"
                 " constructor or in load_np_array_to_table params!")
 
-        if len(data_x) != len(data_y):
-            raise ValueError("Invalid dataset passed, number of labels in "
-                             "data_y ({0}) does not match number of images "
-                             "in data_x ({1})"\
-                .format(len(data_y), len(data_x)))
-
-        self.db_connect()
-
-        if self.append:
-            # Validate that table already exists
-            try:
-                self.db_exec("SELECT count(*) FROM {0}".format(self.table_name),
-                             echo=False)
-            except db.DatabaseError:
-                raise RuntimeError("append=True passed, but cannot append to "
-                                   "table {0} in db {1}.  Either make sure the "
-                                   "table exists and you have access to it, or "
-                                   "use append=False (default) to auto-create it"
-                                   "during loading."
-                    .format(self.table_name, self.db_creds.db_name))
-
-            print "Appending to table {0} in {1} db".format(self.table_name,
-                                                            self.db_creds.db_name)
-        else:
-            # Create new table
-            try:
-                if img_names:
-                    sql = "CREATE TABLE {0} (id SERIAL, x REAL[], y TEXT,\
-                        img_name TEXT)".format(self.table_name)
-                else:
-                    sql = "CREATE TABLE {0} (id SERIAL, x REAL[], y TEXT)"\
-                        .format( self.table_name)
-                self.db_exec(sql)
-            except(Exception, db.DatabaseError):
-                raise RuntimeError("Table {0} already exists in {1} db.  Use "
-                                   "append=True to append more images to it."
-                    .format(self.table_name, self.db_creds.db_name))
-
-            print "Created table {0} in {1} db".format(self.table_name,
-                self.db_creds.db_name)
-
-        self.db_close()
+        self._validate_input_and_create_table(data_x, data_y)
 
         data_y = data_y.flatten()
-        # data_x = 10 , 224 * 224 * 3
-        # data_y = 10 , 1
         data = zip(data_x, data_y)
 
         print("Spawning {0} workers...".format(self.num_workers))
@@ -425,7 +426,12 @@ class ImageLoader:
         # 4. add params for db_creds
         # 5. test no_temp_files flag
         # Shape of datas:  ( number of batches, rows per file, ( x-dim, y-dim ) )
-        filenames = os.listdir(os.path.join(self.root_dir,label))
+        dir_name = os.path.join(self.root_dir,label)
+        if not os.path.isdir(dir_name):
+            print("{0} is not a directory, skipping".format(dir_name))
+            return
+
+        filenames = os.listdir(dir_name)
         data = []
         # y = np.array([label])
         for index, filename in enumerate(filenames):
@@ -438,7 +444,19 @@ class ImageLoader:
             data.append((x,label))
 
 
-    def load_dataset_from_disk(self, root_dir, num_labels, table_name):
+    # TODO:  add doc string; this is an API entry point from Jupyter, but also
+    #  gets called from main()
+    def load_dataset_from_disk(self, root_dir, num_labels, table_name, append=False):
+        start_time = time.time()
+        self.mother = True
+        self.append = append
+        print("append = {0}".format(append))
+        self.table_name = table_name
+        self.img_names = True  # TODO: temporary hack to get this to work;
+                                 # we should remove img_names and replace with
+                                 # an appropriate flag like from_disk
+        self._validate_input_and_create_table()
+
         print "Looking for {0} image labels in {1}".format(num_labels, root_dir)
 
         self.root_dir = root_dir
@@ -465,6 +483,7 @@ class ImageLoader:
         #    if res is not None:
         #        print(res.shape)
 
+# TODO: this function can probably be deleted now
     def _load_label_from_disk(self, label):
         dir_name = os.path.join(self.root_dir, label)
         print(dir_name)
@@ -483,8 +502,7 @@ class ImageLoader:
 
         return images
 
-if __name__ == '__main__':
-    print 'foo'
+def main():
     parser = argparse.ArgumentParser(description='Madlib Image Loader',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-r', '--root-dir', action='store',
@@ -499,6 +517,10 @@ if __name__ == '__main__':
                         dest='db_name', default='madlib',
                         help='Name of database where images should be loaded')
 
+    parser.add_argument('-a', '--append', action='store_true',
+                        dest='append', default=False,
+                        help='Name of database where images should be loaded')
+
     parser.add_argument('-w', '--num-workers', action='store',
                         dest='num_workers', default=5,
                         help='Name of parallel workers.')
@@ -509,23 +531,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     db_creds = DbCredentials()  #TODO: add params from args
-    global iloader
+
     iloader = ImageLoader(db_creds, args.num_workers)
+
     iloader.load_dataset_from_disk(args.root_dir,
                                    args.num_labels,
-                                    args.table_name)
+                                    args.table_name,
+                                    args.append)
 
-# Uncommenting the code below can be useful for testing, but will be removed
-#  once we add a main() function intended to be called by a user who wants to
-#  load images from disk.
-#
-# def test_loading_nparray(data_x, data_y):
-#     db_creds = DbCredentials(port=5094)
-#     iloader = ImageLoader(num_workers=5, table_name='cifar_10_test',
-#                           db_creds=db_creds)
-#     iloader.load_np_array_to_table(data_x, data_y, append=True)
-# 
-# if __name__ == '__main__':
-    # train_data, _ = cifar10.load_data()
-    # test_loading_nparray(*train_data)
-
+if __name__ == '__main__':
+    main()
