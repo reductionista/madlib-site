@@ -53,24 +53,22 @@
 #   img_names:  this is currently unused, but we plan to use it when we add
 #               support for loading images from disk.
 
-import numpy as np
-import sys
-import os
-import re
-import gc
-import random
-import string
-import psycopg2 as db
-from multiprocessing import Pool, current_process
-from shutil import rmtree
-import time
-import signal
-import traceback
-from cStringIO import StringIO
 import argparse
+from cStringIO import StringIO
+from multiprocessing import Pool, current_process
+import os
+import random
+import signal
+from shutil import rmtree
+import string
+import time
+import traceback
+
+import psycopg2 as db
+import numpy as np
 from PIL import Image
 
-class SignalException (Exception):
+class SignalException(Exception):
     pass
 
 def _worker_sig_handler(signum, frame):
@@ -78,7 +76,7 @@ def _worker_sig_handler(signum, frame):
         msg = "Received SIGINT in worker."
     elif signum == signal.SIGTERM:
         msg = "Received SIGTERM in worker."
-        _worker_cleanup()
+        _worker_cleanup(None)
     elif signum == signal.SIGSEGV:
         msg = "Received SIGSEGV in worker."
         traceback.print_stack(frame)
@@ -124,7 +122,8 @@ def init_worker(mother_pid, table_name, append, no_temp_files, db_creds,
         iloader.table_name = table_name
         iloader.no_temp_files = no_temp_files
         iloader.root_dir = root_dir
-        iloader.img_names = None
+        #iloader.img_names = None
+        iloader.from_disk = None
         signal.signal(signal.SIGINT, _worker_sig_handler)
         signal.signal(signal.SIGSEGV, _worker_sig_handler)
         if not no_temp_files:
@@ -176,13 +175,13 @@ class ImageLoader:
     def mk_temp_dir(self):
         self.tmp_dir = '/tmp/madlib_{0}'.format(self._random_string())
         os.mkdir(self.tmp_dir)
-        print("{0}: Created temporary directory {0}"\
+        print("{0}: Created temporary directory {1}"\
             .format(self.pr_name, self.tmp_dir))
 
     def rm_temp_dir(self):
         rmtree(self.tmp_dir)
         self.tmp_dir = None
-        print("{0}: Removed temporary directory {0}"\
+        print("{0}: Removed temporary directory {1}"\
             .format(self.pr_name, self.tmp_dir))
 
     def db_connect(self):
@@ -229,19 +228,21 @@ class ImageLoader:
             self.db_conn.close()
             self.db_conn = None
 
-    def _gen_lines(self, data, img_names=None):
+    def _gen_lines(self, data):
         for i, row in enumerate(data):
+            #x, y, image_name = row
             x, y = row
+            image_name = None
             line = str(x.tolist())
             line = line.replace('[','{').replace(']','}')
-            if img_names:
-                line = '{0}|{1}|{2}\n'.format(line, y, img_names[i])
+            if image_name:
+                line = '{0}|{1}|{2}\n'.format(line, y, image_name)
             else:
                 line = '{0}|{1}\n'.format(line, y)
             yield line
 
-    def _write_file(self, file_object, data, img_names=None):
-        lines = self._gen_lines(data, img_names)
+    def _write_file(self, file_object, data):
+        lines = self._gen_lines(data)
         file_object.writelines(lines)
 
     ROWS_PER_FILE = 1000
@@ -249,9 +250,9 @@ class ImageLoader:
     # Copies from open file-like object f into database
     def _copy_into_db(self, f, data):
         table_name = self.table_name
-        img_names = self.img_names
+        #img_names = self.img_names
 
-        if img_names:
+        if self.from_disk:
             self.db_cur.copy_from(f, table_name, sep='|', columns=['x','y',
                                                                    'img_name'])
         else:
@@ -318,7 +319,7 @@ class ImageLoader:
         else:
             # Create new table
             try:
-                if self.img_names:
+                if self.from_disk:
                     sql = "CREATE TABLE {0} (id SERIAL, x REAL[], y TEXT,\
                         img_name TEXT)".format(self.table_name)
                 else:
@@ -420,12 +421,9 @@ class ImageLoader:
 
     def call_disk_worker(self, label):
         # TODO
-        # 1. make sure all images are of the same shape
         # 2. add image filename to the data tuple and change _gen_lines_func to read the imagename
         # 3. sigint (ctrl-c) not working
-        # 4. add params for db_creds
         # 5. test no_temp_files flag
-        # Shape of datas:  ( number of batches, rows per file, ( x-dim, y-dim ) )
         dir_name = os.path.join(self.root_dir,label)
         if not os.path.isdir(dir_name):
             print("{0} is not a directory, skipping".format(dir_name))
@@ -433,28 +431,41 @@ class ImageLoader:
 
         filenames = os.listdir(dir_name)
         data = []
-        # y = np.array([label])
+        first_image = Image.open(os.path.join(self.root_dir, label, filenames[0]))
         for index, filename in enumerate(filenames):
             if index == self.ROWS_PER_FILE:
                 _call_np_worker(data)
                 data = []
             image = Image.open(os.path.join(self.root_dir, label, filename))
             x = np.array(image)
+            if x.shape != first_image.shape:
+                raise Exception("Images {0} and {1} in label {2} have different shapes {0}:{3} {1}:{4}"
+                "Make sure that all the images are of the same shape.".format(filenames[0], filename, label, first_image.shape, x.shape))
+
             x = np.expand_dims(x, axis=0)
-            data.append((x,label))
+            data.append((x,label, filename))
 
 
-    # TODO:  add doc string; this is an API entry point from Jupyter, but also
-    #  gets called from main()
     def load_dataset_from_disk(self, root_dir, num_labels, table_name, append=False):
+        """
+        Load images from disk into a greenplum database table. All the images should be of the same shape.
+        @root_dir: Location of the dir which contains all the labels and their associated images. Can
+        be relative or absolute. Each label needs to have it's own dir and should contain only images inside
+        it's own dir.
+        @num_labels: Num of labels to process/load into a table. By default all the labels are loaded.
+        @table_name: Name of the database table into which images will be loaded.
+        @append: If set to true, do not create a new table but append to an existing table.
+
+        """
         start_time = time.time()
         self.mother = True
         self.append = append
         print("append = {0}".format(append))
         self.table_name = table_name
-        self.img_names = True  # TODO: temporary hack to get this to work;
+        self.from_disk = True
+        #self.img_names = True  # TODO: temporary hack to get this to work;
                                  # we should remove img_names and replace with
-                                 # an appropriate flag like from_disk
+                                 # an appropriate flag like mmfrom_disk
         self._validate_input_and_create_table()
 
         print "Looking for {0} image labels in {1}".format(num_labels, root_dir)
@@ -477,30 +488,6 @@ class ImageLoader:
             self.pool.map(_call_disk_worker, labels)
         except(Exception) as e:
             raise e
-
-        #for label in labels:
-        #    res = _load_label_from_disk(label)
-        #    if res is not None:
-        #        print(res.shape)
-
-# TODO: this function can probably be deleted now
-    def _load_label_from_disk(self, label):
-        dir_name = os.path.join(self.root_dir, label)
-        print(dir_name)
-        if not os.path.isdir(dir_name):
-            return None
-
-        image_files = os.listdir(dir_name)
-        images = None
-        for image_name in image_files:
-            im = Image.open(os.path.join(dir_name, image_name))
-            a = np.asarray(im)
-            if images is None:
-                images = np.array([a])
-            else:
-                images = np.append(images, [a], axis=0)
-
-        return images
 
 def main():
     parser = argparse.ArgumentParser(description='Madlib Image Loader',
@@ -525,19 +512,35 @@ def main():
                         dest='num_workers', default=5,
                         help='Name of parallel workers.')
 
+    parser.add_argument('-p', '--port', action='store',
+                        dest='port', default=15432,
+                        help='database server port (default: "5432")')
+
+    parser.add_argument('-U', '--username', action='store',
+                        dest='username', default=None,
+                        help='database user name')
+
+    parser.add_argument('-t', '--host', action='store',
+                        dest='host', default='localhost',
+                        help='database server host.')
+
+    parser.add_argument('-P', '--password', action='store',
+                        dest='password', default=None,
+                        help='database user password')
+
     parser.add_argument('table_name',
                         help='Name of table where images should be loaded')
 
     args = parser.parse_args()
 
-    db_creds = DbCredentials()  #TODO: add params from args
+    db_creds = DbCredentials(args.db_name, args.username, args.password, args.host, args.port)
 
     iloader = ImageLoader(db_creds, args.num_workers)
 
     iloader.load_dataset_from_disk(args.root_dir,
-                                   args.num_labels,
-                                    args.table_name,
-                                    args.append)
+                                  args.num_labels,
+                                  args.table_name,
+                                  args.append)
 
 if __name__ == '__main__':
     main()
