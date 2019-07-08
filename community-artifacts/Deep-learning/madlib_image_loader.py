@@ -112,7 +112,7 @@ def _worker_cleanup(dummy):
         iloader.rm_temp_dir()
 
 def init_worker(mother_pid, table_name, append, no_temp_files, db_creds,
-                root_dir=None):
+                from_disk, root_dir=None):
     pr = current_process()
     print("Initializing {0} [pid {1}]".format(pr.name, pr.pid))
 
@@ -122,8 +122,7 @@ def init_worker(mother_pid, table_name, append, no_temp_files, db_creds,
         iloader.table_name = table_name
         iloader.no_temp_files = no_temp_files
         iloader.root_dir = root_dir
-        #iloader.img_names = None
-        iloader.from_disk = None
+        iloader.from_disk = from_disk
         signal.signal(signal.SIGINT, _worker_sig_handler)
         signal.signal(signal.SIGSEGV, _worker_sig_handler)
         if not no_temp_files:
@@ -179,10 +178,10 @@ class ImageLoader:
             .format(self.pr_name, self.tmp_dir))
 
     def rm_temp_dir(self):
-        rmtree(self.tmp_dir)
-        self.tmp_dir = None
         print("{0}: Removed temporary directory {1}"\
             .format(self.pr_name, self.tmp_dir))
+        rmtree(self.tmp_dir)
+        self.tmp_dir = None
 
     def db_connect(self):
         if self.db_cur:
@@ -231,8 +230,8 @@ class ImageLoader:
     def _gen_lines(self, data):
         for i, row in enumerate(data):
             #x, y, image_name = row
-            x, y = row
-            image_name = None
+            x, y, image_name = row
+            #image_name = None
             line = str(x.tolist())
             line = line.replace('[','{').replace(']','}')
             if image_name:
@@ -327,9 +326,9 @@ class ImageLoader:
                         .format( self.table_name)
                 self.db_exec(sql)
             except db.DatabaseError as e:
-                raise RuntimeError("Table {0} already exists in {1} db.  Use "
-                                   "append=True to append more images to it."
-                    .format(self.table_name, self.db_creds.db_name))
+                raise RuntimeError("Error {0} while creating Table {1} in db {2}. If the table already"
+                                 " exists, use append=True to append more images to it."
+                                .format(e.pgerror, self.table_name, self.db_creds.db_name))
 
             print "Created table {0} in {1} db".format(self.table_name,
                 self.db_creds.db_name)
@@ -383,7 +382,8 @@ class ImageLoader:
                                self.table_name,
                                self.append,
                                no_temp_files,
-                               self.db_creds))
+                               self.db_creds,
+                               False))
 
 
         datas = []
@@ -438,7 +438,7 @@ class ImageLoader:
                 data = []
             image = Image.open(os.path.join(self.root_dir, label, filename))
             x = np.array(image)
-            if x.shape != first_image.shape:
+            if x.shape != np.array(first_image).shape:
                 raise Exception("Images {0} and {1} in label {2} have different shapes {0}:{3} {1}:{4}"
                 "Make sure that all the images are of the same shape.".format(filenames[0], filename, label, first_image.shape, x.shape))
 
@@ -463,9 +463,7 @@ class ImageLoader:
         print("append = {0}".format(append))
         self.table_name = table_name
         self.from_disk = True
-        #self.img_names = True  # TODO: temporary hack to get this to work;
-                                 # we should remove img_names and replace with
-                                 # an appropriate flag like mmfrom_disk
+        # self.no_temp_files = True
         self._validate_input_and_create_table()
 
         print "Looking for {0} image labels in {1}".format(num_labels, root_dir)
@@ -483,6 +481,7 @@ class ImageLoader:
                                        self.append,
                                        self.no_temp_files,
                                        self.db_creds,
+                                       self.from_disk,
                                        root_dir))
         try:
             self.pool.map(_call_disk_worker, labels)
@@ -535,10 +534,11 @@ def main():
 
     db_creds = DbCredentials(args.db_name, args.username, args.password, args.host, args.port)
 
-    iloader = ImageLoader(db_creds, args.num_workers)
+    print args.num_workers
+    iloader = ImageLoader(db_creds, int(args.num_workers))
 
     iloader.load_dataset_from_disk(args.root_dir,
-                                  args.num_labels,
+                                  int(args.num_labels),
                                   args.table_name,
                                   args.append)
 
