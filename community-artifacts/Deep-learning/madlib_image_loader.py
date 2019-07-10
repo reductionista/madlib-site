@@ -89,8 +89,8 @@ def _call_disk_worker(label):
     global iloader
     iloader.call_disk_worker(label)
 
-def _call_np_worker(data): # data = (x, y)
-    try:
+def _call_np_worker(data): # data = list of (x, y) or (x, y, num_images) tuples
+    try:                   #        of length self.ROWS_PER_FILE
         if iloader.no_temp_files:
             iloader._just_load(data)
         else:
@@ -178,9 +178,9 @@ class ImageLoader:
             .format(self.pr_name, self.tmp_dir))
 
     def rm_temp_dir(self):
+        rmtree(self.tmp_dir)
         print("{0}: Removed temporary directory {1}"\
             .format(self.pr_name, self.tmp_dir))
-        rmtree(self.tmp_dir)
         self.tmp_dir = None
 
     def db_connect(self):
@@ -228,22 +228,26 @@ class ImageLoader:
             self.db_conn = None
 
     def _gen_lines(self, data):
+        def f(x):
+            x = str(x.tolist())
+            return x.replace('[','{').replace(']','}')
+
         for i, row in enumerate(data):
-            #x, y, image_name = row
-            x, y, image_name = row
-            #image_name = None
-            line = str(x.tolist())
-            line = line.replace('[','{').replace(']','}')
-            if image_name:
-                line = '{0}|{1}|{2}\n'.format(line, y, image_name)
+            if len(row) == 3:
+                x, y, image_name = row
+                yield '{0}|{1}|{2}\n'.format(f(x), y, image_name)
+            elif len(row) == 2:
+                yield '{0}|{1}\n'.format(f(x), y)
             else:
-                line = '{0}|{1}\n'.format(line, y)
-            yield line
+                raise RuntimeError("Cannot write invalid row to table:\n{0}"\
+                    .format(row))
 
     def _write_file(self, file_object, data):
         lines = self._gen_lines(data)
         file_object.writelines(lines)
 
+    # This is default value, can be overriden by user, by setting
+    #   iloader.ROWS_PER_FILE after ImageLoader is created.
     ROWS_PER_FILE = 1000
 
     # Copies from open file-like object f into database
@@ -326,9 +330,11 @@ class ImageLoader:
                         .format( self.table_name)
                 self.db_exec(sql)
             except db.DatabaseError as e:
-                raise RuntimeError("Error {0} while creating Table {1} in db {2}. If the table already"
-                                 " exists, use append=True to append more images to it."
-                                .format(e.pgerror, self.table_name, self.db_creds.db_name))
+                raise RuntimeError("{0} while creating {1} in db {2}.\n"
+                                   "If the table already exists, you can use "
+                                   "append=True to append more images to it."
+                                .format(e.message.strip(), self.table_name,
+                                        self.db_creds.db_name))
 
             print "Created table {0} in {1} db".format(self.table_name,
                 self.db_creds.db_name)
@@ -420,18 +426,14 @@ class ImageLoader:
         self.pool.terminate()
 
     def call_disk_worker(self, label):
-        # TODO
-        # 2. add image filename to the data tuple and change _gen_lines_func to read the imagename
-        # 3. sigint (ctrl-c) not working
-        # 5. test no_temp_files flag
         dir_name = os.path.join(self.root_dir,label)
-        if not os.path.isdir(dir_name):
-            print("{0} is not a directory, skipping".format(dir_name))
-            return
 
         filenames = os.listdir(dir_name)
         data = []
         first_image = Image.open(os.path.join(self.root_dir, label, filenames[0]))
+        # TODO:  There must be something wrong here, In testing I see only 1000 files
+        #  out of 5000 being loaded in each category.  So it seems like this
+        #  for loop is stopping for some reason after the first iteration?
         for index, filename in enumerate(filenames):
             if index == self.ROWS_PER_FILE:
                 _call_np_worker(data)
@@ -443,10 +445,10 @@ class ImageLoader:
                 "Make sure that all the images are of the same shape.".format(filenames[0], filename, label, first_image.shape, x.shape))
 
             x = np.expand_dims(x, axis=0)
-            data.append((x,label, filename))
+            data.append((x, label, filename))
 
 
-    def load_dataset_from_disk(self, root_dir, num_labels, table_name, append=False):
+    def load_dataset_from_disk(self, root_dir, table_name, num_labels='all', append=False, no_temp_files=False):
         """
         Load images from disk into a greenplum database table. All the images should be of the same shape.
         @root_dir: Location of the dir which contains all the labels and their associated images. Can
@@ -460,18 +462,32 @@ class ImageLoader:
         start_time = time.time()
         self.mother = True
         self.append = append
-        print("append = {0}".format(append))
+        self.no_temp_files = no_temp_files
         self.table_name = table_name
         self.from_disk = True
-        # self.no_temp_files = True
         self._validate_input_and_create_table()
 
-        print "Looking for {0} image labels in {1}".format(num_labels, root_dir)
-
         self.root_dir = root_dir
-        labels = os.listdir(root_dir)
-        if num_labels is not 'all':
+        subdirs = os.listdir(root_dir)
+
+        labels = []
+        # Prune files from directory listing, only use actual sub-directories
+        #  This allows the user to keep a tar.gz file or other extraneous files
+        #  in the root directory without causing any problems.
+        for subdir in subdirs:
+            if os.path.isdir(os.path.join(root_dir,subdir)):
+                labels.append(subdir)
+            else:
+                print("{0} is not a directory, skipping".format(subdir))
+
+        if num_labels == 'all':
+            print('number of labels = {}'.format(len(labels)))
+            num_labels = len(labels)
+            print "Found {0} image labels in {1}".format(num_labels, root_dir)
+        else:
+            num_labels = int(num_labels)
             labels = labels[:num_labels]
+            print "Using first {0} image labels in {1}".format(num_labels, root_dir)
 
         if not self.pool:
             self.pool = Pool(processes=self.num_workers,
@@ -527,6 +543,11 @@ def main():
                         dest='password', default=None,
                         help='database user password')
 
+    parser.add_argument('-m', '--no_temp_files', action='store',
+                        dest='no_temp_files', default=None,
+                        help="no temporary files, construct all image tables "
+                             " in-memory")
+
     parser.add_argument('table_name',
                         help='Name of table where images should be loaded')
 
@@ -534,13 +555,13 @@ def main():
 
     db_creds = DbCredentials(args.db_name, args.username, args.password, args.host, args.port)
 
-    print args.num_workers
     iloader = ImageLoader(db_creds, int(args.num_workers))
 
     iloader.load_dataset_from_disk(args.root_dir,
-                                  int(args.num_labels),
-                                  args.table_name,
-                                  args.append)
+                                   args.table_name,
+                                   args.num_labels,
+                                   args.append,
+                                   args.no_temp_files)
 
 if __name__ == '__main__':
     main()
