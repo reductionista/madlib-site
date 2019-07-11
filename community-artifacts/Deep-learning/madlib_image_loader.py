@@ -431,13 +431,7 @@ class ImageLoader:
         filenames = os.listdir(dir_name)
         data = []
         first_image = Image.open(os.path.join(self.root_dir, label, filenames[0]))
-        # TODO:  There must be something wrong here, In testing I see only 1000 files
-        #  out of 5000 being loaded in each category.  So it seems like this
-        #  for loop is stopping for some reason after the first iteration?
         for index, filename in enumerate(filenames):
-            if index == self.ROWS_PER_FILE:
-                _call_np_worker(data)
-                data = []
             image = Image.open(os.path.join(self.root_dir, label, filename))
             x = np.array(image)
             if x.shape != np.array(first_image).shape:
@@ -446,7 +440,9 @@ class ImageLoader:
 
             x = np.expand_dims(x, axis=0)
             data.append((x, label, filename))
-
+            if (index % self.ROWS_PER_FILE) == (self.ROWS_PER_FILE - 1):
+                _call_np_worker(data)
+                data = []
 
     def load_dataset_from_disk(self, root_dir, table_name, num_labels='all', append=False, no_temp_files=False):
         """
@@ -543,8 +539,8 @@ def main():
                         dest='password', default=None,
                         help='database user password')
 
-    parser.add_argument('-m', '--no_temp_files', action='store',
-                        dest='no_temp_files', default=None,
+    parser.add_argument('-m', '--no-temp-files', action='store_true',
+                        dest='no_temp_files', default=False,
                         help="no temporary files, construct all image tables "
                              " in-memory")
 
