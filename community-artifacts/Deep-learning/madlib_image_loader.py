@@ -1,19 +1,48 @@
+#!/usr/bin/env python
 #
 # Python module to load images into postgres or greenplum db, for 
 #  use with madlib deep_learning module.
 #
-# The format of the image tables created will have at least 3 rows:
+# The format of the image tables created will have at least 3 columns:
 #     (id SERIAL, x REAL[], y).  Each row is 1 image,
 #     with image data represented by x (a 3D array of type "real"), and
 #     y (category) as text.  id is just a unique identifier for each image,
-#     so they don't get mixed up during prediction.
+#     so they don't get mixed up during prediction.  If images are being
+#     loaded from disk, there will be an additional img_name column containing
+#     the filename of the image, to help identify later.
 #
 #   ImageLoader.ROWS_PER_FILE = 1000 by default; this is the number of rows per
 #      temporary file (or StringIO buffer) loaded at once.
 #
 
-#   User API is through ImageLoader and DbCredentials class constructors,
-#     and ImageLoader.load_np_array_to_table
+# There are two ways of using this module.  One is to load it with:
+#  import madlib_image_loader
+#     (make sure it is in a directory python knows about.
+#      Try adding the directory to PYTHONPATH if it can't find it.)
+# 
+# and use the exposed classes and functions described below.
+#
+# The second way is to run it directly, passing all options on the
+#  command line.  The second way only supports loading images
+#  from disk, whereas the first way can be used either to do that or
+#  to load them from a dataset already in an existing numpy array (such
+#  as the datasets that come prepackaged with keras).
+#
+#   The module API is pretty simple, only involving two classes:
+#     ImageLoader
+#     DbCredentials
+#
+#     two functions (in addition to the class constructors):
+#
+#   ImageLoader.load_dataset_from_np
+#   ImageLoader.load_dataset_from_disk
+#
+#     and one adjustable parameter (change if default is not working well):
+#
+#   ImageLoader.ROWS_PER_FILE=1000
+#
+#
+#   Workflow
 #
 #     1. Create objects:
 #
@@ -22,36 +51,91 @@
 #
 #           iloader = ImageLoader(db_creds, num_workers, table_name=None)
 #
-#     2. Perform parallel image loading:
+#     2a. Perform parallel image loading from numpy arrays:
 #
-#           iloader.load_np_array_to_table(data_x, data_y, table_name,
-#                                          append=False, img_names=None,
-#                                          no_temp_files=False)
+#           iloader.load_dataset_from_np(data_x, data_y, table_name,
+#                                        append=False, no_temp_files=False)
 #
-#   data_x contains image data in np.array format, and data_y is a 1D np.array
-#       of the image categories (labels).
+#       data_x contains image data in np.array format, and data_y is a 1D np.array
+#           of the image categories (labels).
+#    
+#       Default database credentials are: localhost port 5432, madlib db, no
+#           password.  Calling the default constructor DbCredentials() will attempt
+#           to connect using these credentials, but any of them can be overriden.
+#    
+#       append=False attempts to create a new table, while append=True appends more 
+#           images to an existing table.
+#    
+#       If the user passes a table_name while creating ImageLoader object, it will
+#           be used for all further calls to load_dataset_from_np.  It can be
+#           changed by passing it as a parameter during the actual call to
+#           load_dataset_from_np, and if so future calls will load to that table
+#           name instead.  This avoids needing to pass the table_name again every
+#           time, but also allows it to be changed at any time.
+#    
+#       EXPERIMENTAL:  If no_temp_files=True, the operation will happen without
+#                      writing out the tables to temporary files before loading them.
+#                      Instead, an in-memory filelike buffer (StringIO) will be used
+#                      to build the tables before loading.  Currently not working,
+#                      for unknown reason.
 #
-#   Default database credentials are: localhost port 5432, madlib db, no
-#       password.  Calling the default constructor DbCredentials() will attempt
-#       to connect using these credentials, but any of them can be overriden.
+#  or,
 #
-#   append=False attempts to create a new table, while append=True appends more 
-#       images to an existing table.
+#     2b. Perform parallel image loading from disk:
 #
-#   If the user passes a table_name while creating ImageLoader object, it will
-#       be used for all further calls to load_np_array_to_table.  It can be
-#       changed by passing it as a parameter during the actual call to
-#       load_np_array_to_table, and if so future calls will load to that table
-#       name instead.  This avoids needing to pass the table_name again every
-#       time, but also allows it to be changed at any time.
+#           load_dataset_from_disk(self, root_dir, table_name, num_labels='all',
+#               append=False, no_temp_files=False):
 #
-#   EXPERIMENTAL:  If no_temp_files=True, the operation will happen without
-#                  writing out the tables to temporary files before loading them.
-#                  Instead, an in-memory filelike buffer (StringIO) will be used
-#                  to build the tables before loading.
+#       Calling this function instead will look in root_dir on the local disk of
+#           wherever this is being run.  It will skip over any files in that
+#           directory, but will load images contained in each of its
+#           subdirectories.  The images should be organized by category/class,
+#           where the name of each subdirectory is the label for the images
+#           contained within it.
+#       
+#       The table_name, append, and no_temp_files parameters are the same as
+#           above.  num_labels is an optional parameter which can be used to
+#           restrict the number of labels (image classes) loaded, even if more
+#           are found in root_dir.  For example, for a large dataset you may
+#           have hundreds of labels, but only wish to use a subset of that
+#           containing a few dozen.
 #
-#   img_names:  this is currently unused, but we plan to use it when we add
-#               support for loading images from disk.
+#   
+# If you want to load an image dataset from disk, but don't feel like writing
+#  any python code to call the API, you can just run this file directly, passing
+#  these parameters on the command line.
+#
+# usage: madlib_image_loader.py [-h] [-r ROOT_DIR] [-n NUM_LABELS] [-d DB_NAME]
+#                               [-a] [-w NUM_WORKERS] [-p PORT] [-U USERNAME]
+#                               [-t HOST] [-P PASSWORD] [-m]
+#                               table_name
+# 
+# positional arguments:
+#   table_name            Name of table where images should be loaded
+# 
+# optional arguments:
+#   -h, --help            show this help message and exit
+#   -r ROOT_DIR, --root-dir ROOT_DIR
+#                         Root directory of image directories (default: .)
+#   -n NUM_LABELS, --num-labels NUM_LABELS
+#                         Number of image labels (categories) to load. (default:
+#                         all)
+#   -d DB_NAME, --db-name DB_NAME
+#                         Name of database where images should be loaded
+#                         (default: madlib)
+#   -a, --append          Name of database where images should be loaded
+#                         (default: False)
+#   -w NUM_WORKERS, --num-workers NUM_WORKERS
+#                         Name of parallel workers. (default: 5)
+#   -p PORT, --port PORT  database server port (default: 5432)
+#   -U USERNAME, --username USERNAME
+#                         database user name (default: None)
+#   -t HOST, --host HOST  database server host. (default: localhost)
+#   -P PASSWORD, --password PASSWORD
+#                         database user password (default: None)
+#   -m, --no-temp-files   no temporary files, construct all image tables in-
+#                         memory (default: False)
+#
 
 import argparse
 from cStringIO import StringIO
@@ -137,7 +221,7 @@ def init_worker(mother_pid, table_name, append, no_temp_files, db_creds,
 
 class DbCredentials:
     def __init__(self, db_name='madlib', user=None, password='',
-                 host='localhost', port=15432):
+                 host='localhost', port=5432):
         if user:
             self.user = user
         else:
@@ -253,7 +337,6 @@ class ImageLoader:
     # Copies from open file-like object f into database
     def _copy_into_db(self, f, data):
         table_name = self.table_name
-        #img_names = self.img_names
 
         if self.from_disk:
             self.db_cur.copy_from(f, table_name, sep='|', columns=['x','y',
@@ -341,9 +424,8 @@ class ImageLoader:
 
         self.db_close()
 
-    def load_np_array_to_table(self, data_x, data_y, table_name=None,
-                               append=False, img_names=None,
-                               no_temp_files=False):
+    def load_dataset_from_np(self, data_x, data_y, table_name=None,
+                             append=False, no_temp_files=False):
         """
         Loads a numpy array into db.  For append=False, creates a new table and
             loads the data.  For append=True, appends data to existing table.
@@ -357,9 +439,7 @@ class ImageLoader:
         @data_y dependent variable data (image classes), as an numpy array
         @table_name Name of table in db to load data into
         @append Whether to create a new table (False) or append to an existing
-            one (True).  If unspecified, default is False @img_names If not None,
-            a list of the image names corresponding to elements of the data_x
-            numpy array.  If present, this is included as a column in the table.
+            one (True).  If unspecified, default is False
         @no_temp_files If specified, no temporary files are written--all
             operations are performed in-memory.
 
@@ -372,7 +452,7 @@ class ImageLoader:
 
         if not self.table_name:
             raise ValueError("Must specify table_name either in ImageLoader"
-                " constructor or in load_np_array_to_table params!")
+                " constructor or in load_dataset_from_np params!")
 
         self._validate_input_and_create_table(data_x, data_y)
 
@@ -408,9 +488,9 @@ class ImageLoader:
         #  multiprocessing library will call _call_np_worker() in some worker for
         #   each file, splitting the list of files up into roughly equal chunks
         #   for each worker to handle.  For example, if there are 500 files and
-        #   5 workers, each will handle about 100 files, and _call_np_worker() will
-        #   be called 100 times, each time with a different file full of images.
-        #
+        #   5 workers, each will handle about 100 files, and _call_np_worker()
+        #   will #   be called 100 times, each time with a different file full
+        #   of images.
 
         try:
             self.pool.map(_call_np_worker, datas)
@@ -420,9 +500,11 @@ class ImageLoader:
             raise e
 
         self.pool.map(_worker_cleanup, [0] * self.num_workers)
+
         end_time = time.time()
         print("Done!  Loaded {0} images in {1}s"\
             .format(len(data), end_time - start_time))
+
         self.pool.terminate()
 
     def call_disk_worker(self, label):
@@ -435,8 +517,11 @@ class ImageLoader:
             image = Image.open(os.path.join(self.root_dir, label, filename))
             x = np.array(image)
             if x.shape != np.array(first_image).shape:
-                raise Exception("Images {0} and {1} in label {2} have different shapes {0}:{3} {1}:{4}"
-                "Make sure that all the images are of the same shape.".format(filenames[0], filename, label, first_image.shape, x.shape))
+                raise Exception("Images {0} and {1} in label {2} have different "
+                                "shapes {0}:{3} {1}:{4}.  Make sure that all the "
+                                "images are of the same shape."\
+                    .format(filenames[0], filename, label,
+                            first_image.shape, x.shape))
 
             x = np.expand_dims(x, axis=0)
             data.append((x, label, filename))
@@ -444,16 +529,23 @@ class ImageLoader:
                 _call_np_worker(data)
                 data = []
 
-    def load_dataset_from_disk(self, root_dir, table_name, num_labels='all', append=False, no_temp_files=False):
+    def load_dataset_from_disk(self, root_dir, table_name, num_labels='all',
+                               append=False, no_temp_files=False):
         """
-        Load images from disk into a greenplum database table. All the images should be of the same shape.
-        @root_dir: Location of the dir which contains all the labels and their associated images. Can
-        be relative or absolute. Each label needs to have it's own dir and should contain only images inside
-        it's own dir.
-        @num_labels: Num of labels to process/load into a table. By default all the labels are loaded.
-        @table_name: Name of the database table into which images will be loaded.
-        @append: If set to true, do not create a new table but append to an existing table.
-
+        Load images from disk into a greenplum database table. All the images
+            should be of the same shape.
+        @root_dir: Location of the dir which contains all the labels and their 
+            associated images. Can be relative or absolute. Each label needs to
+            have it's own dir and should contain only images inside it's own dir.
+            (Extra files in root dir will be ignored, only diretories matter.)
+        @table_name: Name of destination table in db
+        @num_labels: Num of labels to process/load into a table. By default all
+            the labels are loaded.  @table_name: Name of the database table into
+            which images will be loaded.
+        @append: If set to true, do not create a new table but append to an
+            existing table.
+        @no_temp_files: EXPERIMENTAL.  Handle table creation in-memory, don't
+            write any temp files. (Not working in current testing; unknown why.)
         """
         start_time = time.time()
         self.mother = True
@@ -483,7 +575,8 @@ class ImageLoader:
         else:
             num_labels = int(num_labels)
             labels = labels[:num_labels]
-            print "Using first {0} image labels in {1}".format(num_labels, root_dir)
+            print "Using first {0} image labels in {1}".format(num_labels,
+                                                               root_dir)
 
         if not self.pool:
             self.pool = Pool(processes=self.num_workers,
@@ -499,6 +592,13 @@ class ImageLoader:
             self.pool.map(_call_disk_worker, labels)
         except(Exception) as e:
             raise e
+
+        self.pool.map(_worker_cleanup, [0] * self.num_workers)
+        self.pool.terminate()
+
+        end_time = time.time()
+        print("Done!  Loaded {0} image categories in {1}s"\
+            .format(len(labels), end_time - start_time))
 
 def main():
     parser = argparse.ArgumentParser(description='Madlib Image Loader',
@@ -524,8 +624,8 @@ def main():
                         help='Name of parallel workers.')
 
     parser.add_argument('-p', '--port', action='store',
-                        dest='port', default=15432,
-                        help='database server port (default: "5432")')
+                        dest='port', default=5432,
+                        help='database server port')
 
     parser.add_argument('-U', '--username', action='store',
                         dest='username', default=None,
@@ -549,7 +649,8 @@ def main():
 
     args = parser.parse_args()
 
-    db_creds = DbCredentials(args.db_name, args.username, args.password, args.host, args.port)
+    db_creds = DbCredentials(args.db_name, args.username, args.password,
+                             args.host, args.port)
 
     iloader = ImageLoader(db_creds, int(args.num_workers))
 
