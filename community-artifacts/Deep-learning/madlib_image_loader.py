@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Python module to load images into postgres or greenplum db, for 
+# Python module to load images into postgres or greenplum db, for
 #  use with madlib deep_learning module.
 #
 # The format of the image tables created will have at least 3 columns:
@@ -19,7 +19,7 @@
 #  import madlib_image_loader
 #     (make sure it is in a directory python knows about.
 #      Try adding the directory to PYTHONPATH if it can't find it.)
-# 
+#
 # and use the exposed classes and functions described below.
 #
 # The second way is to run it directly, passing all options on the
@@ -58,11 +58,11 @@
 #
 #       data_x contains image data in np.array format, and data_y is a 1D np.array
 #           of the image categories (labels).
-#    
+#
 #       Default database credentials are: localhost port 5432, madlib db, no
 #           password.  Calling the default constructor DbCredentials() will attempt
 #           to connect using these credentials, but any of them can be overriden.
-#    
+#
 #       append=False attempts to create a new table, while append=True appends more 
 #           images to an existing table.
 #    
@@ -92,7 +92,7 @@
 #           subdirectories.  The images should be organized by category/class,
 #           where the name of each subdirectory is the label for the images
 #           contained within it.
-#       
+#
 #       The table_name, append, and no_temp_files parameters are the same as
 #           above.  num_labels is an optional parameter which can be used to
 #           restrict the number of labels (image classes) loaded, even if more
@@ -100,7 +100,7 @@
 #           have hundreds of labels, but only wish to use a subset of that
 #           containing a few dozen.
 #
-#   
+#
 # If you want to load an image dataset from disk, but don't feel like writing
 #  any python code to call the API, you can just run this file directly, passing
 #  these parameters on the command line.
@@ -109,10 +109,10 @@
 #                               [-a] [-w NUM_WORKERS] [-p PORT] [-U USERNAME]
 #                               [-t HOST] [-P PASSWORD] [-m]
 #                               table_name
-# 
+#
 # positional arguments:
 #   table_name            Name of table where images should be loaded
-# 
+#
 # optional arguments:
 #   -h, --help            show this help message and exit
 #   -r ROOT_DIR, --root-dir ROOT_DIR
