@@ -63,9 +63,9 @@
 #           password.  Calling the default constructor DbCredentials() will attempt
 #           to connect using these credentials, but any of them can be overriden.
 #
-#       append=False attempts to create a new table, while append=True appends more 
+#       append=False attempts to create a new table, while append=True appends more
 #           images to an existing table.
-#    
+#
 #       If the user passes a table_name while creating ImageLoader object, it will
 #           be used for all further calls to load_dataset_from_np.  It can be
 #           changed by passing it as a parameter during the actual call to
@@ -534,7 +534,7 @@ class ImageLoader:
         """
         Load images from disk into a greenplum database table. All the images
             should be of the same shape.
-        @root_dir: Location of the dir which contains all the labels and their 
+        @root_dir: Location of the dir which contains all the labels and their
             associated images. Can be relative or absolute. Each label needs to
             have it's own dir and should contain only images inside it's own dir.
             (Extra files in root dir will be ignored, only diretories matter.)
