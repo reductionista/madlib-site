@@ -270,7 +270,7 @@ class ImageLoader:
             for n in xrange(10)])
 
     def mk_temp_dir(self):
-        self.tmp_dir = '/tmp/madlib_{0}'.format(self._random_string())
+        self.tmp_dir = '/data1/tmp/madlib_{0}'.format(self._random_string())
         os.mkdir(self.tmp_dir)
         print("{0}: Created temporary directory {1}"\
             .format(self.pr_name, self.tmp_dir))
@@ -396,6 +396,8 @@ class ImageLoader:
 
         with file(filename, 'r') as f:
             self._copy_into_db(f, data)
+
+	os.remove(filename)
 
     def _validate_input_and_create_table(self, data_x=[], data_y=[]):
         if len(data_x) != len(data_y):
