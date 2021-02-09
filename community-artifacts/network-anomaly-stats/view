@@ -1,0 +1,26 @@
+ls -lSr
+echo "Categorical columns c9,8,6,5,10 with only 2 values:"
+read
+cat stats-c{9,8,6,5,10}.txt
+echo "Categorical columns c0,7,12,18 with only 3 values:"
+read
+cat stats-c{0,7,12,18}.txt
+echo "Numerical integer columns c16,c24:"
+read
+cat stats-c{16,24}.txt
+echo "Categorical TEXT columns c1 and c2:"
+read
+cat stats-c{1,2}.txt
+echo "Columns 21,23,11,26,19,20:"
+read
+cat stats-c{21,23,11,19,20}.txt
+#  Column 19:  6 and 9 more likely than most, otherwise fairly smooth dist
+#  Column 20:  number of logged events of a certain kind? (Poisson Dist?)
+echo "Column 26 (continuous range from 0.00-1.00):"
+read
+cat stats-c26.txt
+echo "Columns 22,17,25,15,13 are medium-large.  Two have 0-255, return value?  Two have range 13-511, packet header size?:"
+read
+cat stats-c{22,17,25,15,13}.txt
+echo "Then c3, c14 and c4 are too big to display.  Number of bytes in a packet?"
+read
